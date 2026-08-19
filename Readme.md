@@ -8,6 +8,8 @@ pip install openpyxl playwright
 
 playwright install chromium
 
+python -m playwright install
+
 python3 -m venv venv 
 
 source venv/bin/activate (mac)
