@@ -149,7 +149,6 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
                     pass
 
 async def main():
-    # Измененные поисковые запросы
     search_queries = [
         "нотариус", 
         "адвокат", 
@@ -159,8 +158,8 @@ async def main():
         "банкротство физических лиц"
     ]
     city = "moscow"
-    # Изменены названия файла и листа
     file_path = "юридические_услуги.xlsx"
+    progress_file = "progress_yur.txt"  # Файл прогресса для юридического парсера
     sheet_title = "Юридические услуги"
     
     LAT_MIN, LAT_MAX = 55.55, 55.92
@@ -191,6 +190,13 @@ async def main():
         ws.append(["№", "Название", "Адрес", "Телефон", "Сайт", "URL"])
         results_count = 0
 
+    # Загрузка уже пройденных секторов
+    done_sectors = set()
+    if os.path.exists(progress_file):
+        with open(progress_file, "r", encoding="utf-8") as f:
+            done_sectors = set(line.strip() for line in f if line.strip())
+        print(f"Загружен прогресс: пропущено уже готовых секторов: {len(done_sectors)}")
+
     state = {"count": results_count}
     grid_points = generate_grid(LAT_MIN, LAT_MAX, LON_MIN, LON_MAX, GRID_STEPS)
 
@@ -214,6 +220,13 @@ async def main():
                 encoded_query = urllib.parse.quote(search_query)
 
                 for cell_idx, (lat, lon, sector_name) in enumerate(grid_points, 1):
+                    progress_key = f"{search_query}|{sector_name}"
+
+                    # Пропускаем, если сектор для запроса уже обработан
+                    if progress_key in done_sectors:
+                        print(f"⏩ Пропущен (уже готов): {search_query} | {sector_name}")
+                        continue
+
                     print(f"\n📍 [{search_query}] [{cell_idx}/{len(grid_points)}]: {sector_name}")
 
                     for page_num in range(1, MAX_PAGES_PER_CELL + 1):
@@ -246,8 +259,18 @@ async def main():
                         if tasks:
                             await asyncio.gather(*tasks, return_exceptions=True)
 
+                    # Записываем сектор в файл прогресса по завершении
+                    done_sectors.add(progress_key)
+                    with open(progress_file, "a", encoding="utf-8") as f:
+                        f.write(f"{progress_key}\n")
+
+        except asyncio.CancelledError:
+            pass
         finally:
-            await browser.close()
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     try:
