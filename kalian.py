@@ -149,10 +149,13 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
                     pass
 
 async def main():
-    search_queries = ["кальянная", "кальян бар", "лаундж бар", "hookah lounge", "кальянный клуб"]
+    # ДОБАВЛЕНО: расширенные поисковые запросы
+    search_queries = [
+        "кальянная", "кальян бар", "лаундж бар", 
+        "hookah lounge", "кальянный клуб", "кальян"
+    ]
     city = "moscow"
     file_path = "кальянные_москвы.xlsx"
-    # Файл прогресса переименован
     progress_file = "progress_kalian.txt" 
     sheet_title = "Кальянные"
     
@@ -160,7 +163,9 @@ async def main():
     LON_MIN, LON_MAX = 37.35, 37.85
     GRID_STEPS = 5 
     ZOOM = 14  
-    MAX_PAGES_PER_CELL = 2
+    
+    # ИЗМЕНЕНО: проверяем до 10 страниц выдачи
+    MAX_PAGES_PER_CELL = 10 
     CONCURRENCY_LIMIT = 4
 
     saved_ids = set()
@@ -228,11 +233,18 @@ async def main():
                             await main_page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
                             await bypass_museum(main_page)
                             await main_page.wait_for_timeout(1000)
+                            
+                            # ДОБАВЛЕНО: Скроллинг страницы для прогрузки всех 24 карточек (lazy loading)
+                            for _ in range(5):
+                                await main_page.mouse.wheel(0, 3000)
+                                await main_page.wait_for_timeout(800)
+                                
                         except Exception:
                             continue
 
                         cards = main_page.locator('a[href*="/firm/"]')
                         card_count = await cards.count()
+                        
                         if card_count == 0:
                             break
 
