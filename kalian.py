@@ -27,17 +27,11 @@ def generate_grid(lat_min, lat_max, lon_min, lon_max, steps):
     lon_step = (lon_max - lon_min) / steps
     points = []
     
-    # Матрица районов Москвы для сетки 5x5 (i - широта с юга на север, j - долгота с запада на восток)
     grid_districts = [
-        # i=0 (Крайний Юг)
         ["Внуково, Московский", "Теплый Стан, Коньково", "Бутово, Ясенево, Чертаново Юж.", "Бирюлево, Царицыно", "Зябликово, Братеево, Капотня"],
-        # i=1 (Юг и Юго-Запад)
         ["Очаково, Солнцево", "Пр-т Вернадского, Раменки", "Чертаново Сев., Зюзино", "Нагатино, Печатники, Текстильщики", "Марьино, Люблино, Кузьминки"],
-        # i=2 (Центр и прилегающие)
         ["Кунцево, Крылатское", "Филевский парк, Хамовники", "ЦАО (Арбат, Якиманка, Замоскворечье)", "Таганский, Басманный, Лефортово", "Перово, Новогиреево, Рязанский"],
-        # i=3 (Север и Северо-Запад)
         ["Строгино, Митино", "Хорошево-Мневники, Сокол", "Тверской, Пресня, Марьина Роща", "Сокольники, Алексеевский", "Измайлово, Гольяново"],
-        # i=4 (Крайний Север)
         ["Куркино, Сев. Тушино", "Ховрино, Головинский", "Отрадное, Коптево, Тимирязевский", "ВДНХ, Останкино, Свиблово", "Медведково, Бабушкинский"]
     ]
 
@@ -45,10 +39,8 @@ def generate_grid(lat_min, lat_max, lon_min, lon_max, steps):
         for j in range(steps):
             lat = round(lat_min + lat_step * (i + 0.5), 6)
             lon = round(lon_min + lon_step * (j + 0.5), 6)
-            
-            # Привычная нумерация карты (А1 - левый верхний угол, E5 - правый нижний)
-            col_letter = chr(65 + j)  # A, B, C, D, E
-            row_num = steps - i       # 5, 4, 3, 2, 1 
+            col_letter = chr(65 + j)
+            row_num = steps - i
             
             if steps == 5:
                 districts = grid_districts[i][j]
@@ -58,12 +50,10 @@ def generate_grid(lat_min, lat_max, lon_min, lon_max, steps):
                 
             points.append((lat, lon, sector_name))
             
-    # Сортируем сектора по порядку А1, А2 ... E5 для красоты вывода
     points.sort(key=lambda x: x[2])
     return points
 
 async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore, state):
-    """Параллельная обработка карточки заведения"""
     async with semaphore:
         page = None
         try:
@@ -162,7 +152,8 @@ async def main():
     search_queries = ["кальянная", "кальян бар", "лаундж бар", "hookah lounge", "кальянный клуб"]
     city = "moscow"
     file_path = "кальянные_москвы.xlsx"
-    progress_file = "progress.txt"
+    # Файл прогресса переименован
+    progress_file = "progress_kalian.txt" 
     sheet_title = "Кальянные"
     
     LAT_MIN, LAT_MAX = 55.55, 55.92
@@ -193,7 +184,6 @@ async def main():
         ws.append(["№", "Название", "Адрес", "Телефон", "Сайт", "URL"])
         results_count = 0
 
-    # Загружаем уже выполненные секторы и запросы из файла прогресса
     done_sectors = set()
     if os.path.exists(progress_file):
         with open(progress_file, "r", encoding="utf-8") as f:
@@ -209,7 +199,7 @@ async def main():
             args=["--disable-blink-features=AutomationControlled"]
         )
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/127.0.0.0",
             viewport={"width": 1280, "height": 720}
         )
         
@@ -223,10 +213,8 @@ async def main():
                 encoded_query = urllib.parse.quote(search_query)
 
                 for cell_idx, (lat, lon, sector_name) in enumerate(grid_points, 1):
-                    # Уникальный ключ для проверки прогресса
                     progress_key = f"{search_query}|{sector_name}"
 
-                    # Если этот сектор для данного запроса уже полностью пройден — пропускаем
                     if progress_key in done_sectors:
                         print(f"⏩ Пропущен (уже готов): {search_query} | {sector_name}")
                         continue
@@ -263,7 +251,6 @@ async def main():
                         if tasks:
                             await asyncio.gather(*tasks, return_exceptions=True)
 
-                    # Как только сектор успешно пройден — записываем в progress.txt
                     done_sectors.add(progress_key)
                     with open(progress_file, "a", encoding="utf-8") as f:
                         f.write(f"{progress_key}\n")
