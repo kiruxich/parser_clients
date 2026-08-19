@@ -154,18 +154,22 @@ async def main():
         "организация свадеб", 
         "свадебный салон", 
         "свадебный организатор", 
-        "свадебный декор"
+        "свадебный декор",
+        "оформление свадеб",
+        "свадебный фотограф",
+        "ведущий на свадьбу",
+        "банкетный зал для свадьбы"
     ]
     city = "moscow"
     file_path = "свадебные_агентства.xlsx"
-    progress_file = "progress_wedding.txt"  # Отдельный файл прогресса для свадебной ниши
+    progress_file = "progress_wedding.txt"
     sheet_title = "Свадебные агентства"
     
     LAT_MIN, LAT_MAX = 55.55, 55.92
     LON_MIN, LON_MAX = 37.35, 37.85
     GRID_STEPS = 5 
     ZOOM = 14  
-    MAX_PAGES_PER_CELL = 2
+    MAX_PAGES_PER_CELL = 10  # Увеличено для максимального охвата в центрах активности
     CONCURRENCY_LIMIT = 4
 
     saved_ids = set()
@@ -189,7 +193,6 @@ async def main():
         ws.append(["№", "Название", "Адрес", "Телефон", "Сайт", "URL"])
         results_count = 0
 
-    # Загрузка уже пройденных секторов
     done_sectors = set()
     if os.path.exists(progress_file):
         with open(progress_file, "r", encoding="utf-8") as f:
@@ -221,7 +224,6 @@ async def main():
                 for cell_idx, (lat, lon, sector_name) in enumerate(grid_points, 1):
                     progress_key = f"{search_query}|{sector_name}"
 
-                    # Пропускаем сектор, если он уже был успешно обработан
                     if progress_key in done_sectors:
                         print(f"⏩ Пропущен (уже готов): {search_query} | {sector_name}")
                         continue
@@ -235,6 +237,12 @@ async def main():
                             await main_page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
                             await bypass_museum(main_page)
                             await main_page.wait_for_timeout(1000)
+
+                            # Прокрутка списка результатов для подгрузки динамического контента (Lazy Loading)
+                            for _ in range(4):
+                                await main_page.mouse.wheel(0, 3000)
+                                await main_page.wait_for_timeout(500)
+
                         except Exception:
                             continue
 
@@ -258,7 +266,6 @@ async def main():
                         if tasks:
                             await asyncio.gather(*tasks, return_exceptions=True)
 
-                    # Записываем сектор в файл прогресса по завершении
                     done_sectors.add(progress_key)
                     with open(progress_file, "a", encoding="utf-8") as f:
                         f.write(f"{progress_key}\n")

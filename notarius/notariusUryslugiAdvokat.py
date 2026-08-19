@@ -152,21 +152,25 @@ async def main():
     search_queries = [
         "нотариус", 
         "адвокат", 
+        "юрист",
         "юридические услуги", 
         "юридическая консультация", 
         "регистрация ООО и ИП", 
-        "банкротство физических лиц"
+        "банкротство физических лиц",
+        "автоюрист",
+        "составление договоров",
+        "защита прав потребителей"
     ]
     city = "moscow"
     file_path = "юридические_услуги.xlsx"
-    progress_file = "progress_yur.txt"  # Файл прогресса для юридического парсера
+    progress_file = "progress_yur.txt"
     sheet_title = "Юридические услуги"
     
     LAT_MIN, LAT_MAX = 55.55, 55.92
     LON_MIN, LON_MAX = 37.35, 37.85
     GRID_STEPS = 5 
     ZOOM = 14  
-    MAX_PAGES_PER_CELL = 2
+    MAX_PAGES_PER_CELL = 10  # Увеличено с 2 до 5 для охвата всей глубины выдачи
     CONCURRENCY_LIMIT = 4
 
     saved_ids = set()
@@ -222,7 +226,7 @@ async def main():
                 for cell_idx, (lat, lon, sector_name) in enumerate(grid_points, 1):
                     progress_key = f"{search_query}|{sector_name}"
 
-                    # Пропускаем, если сектор для запроса уже обработан
+                    # Пропускаем, если сектор для данного запроса уже был полностью обработан
                     if progress_key in done_sectors:
                         print(f"⏩ Пропущен (уже готов): {search_query} | {sector_name}")
                         continue
@@ -238,6 +242,11 @@ async def main():
                             await main_page.wait_for_timeout(1000)
                         except Exception:
                             continue
+
+                        # Прокрутка списка результатов для подгрузки динамического контента (Lazy Loading)
+                        for _ in range(4):
+                            await main_page.mouse.wheel(0, 3000)
+                            await main_page.wait_for_timeout(500)
 
                         cards = main_page.locator('a[href*="/firm/"]')
                         card_count = await cards.count()
