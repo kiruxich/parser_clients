@@ -14,4 +14,4 @@ python3 -m venv venv
 
 source venv/bin/activate (mac)
 
-venv\Scripts\activate.bat
+venv\Scripts\activate.bat (win)

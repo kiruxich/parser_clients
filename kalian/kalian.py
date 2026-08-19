@@ -4,7 +4,11 @@ import openpyxl
 import os
 import re
 import sys
+import random
 from playwright.async_api import async_playwright, Error as PlaywrightError
+import warnings
+
+warnings.filterwarnings("ignore", message="coroutine 'process_firm' was never awaited")
 
 # --- ИСПРАВЛЕНИЕ ОШИБКИ ПРИ НАЖАТИИ CTRL+C НА WINDOWS ---
 if sys.platform.startswith('win'):
@@ -34,7 +38,7 @@ async def bypass_museum(page):
             btn = page.get_by_text("Пропустить обновление")
             if await btn.count() > 0:
                 await btn.first.click()
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(random.randint(1000, 2000))
         except Exception:
             pass
 
@@ -56,8 +60,9 @@ def generate_grid(lat_min, lat_max, lon_min, lon_max, steps):
         for j in range(steps):
             lat = round(lat_min + lat_step * (i + 0.5), 6)
             lon = round(lon_min + lon_step * (j + 0.5), 6)
+            
             col_letter = chr(65 + j)
-            row_num = steps - i
+            row_num = steps - i 
             
             if steps == 5:
                 districts = grid_districts[i][j]
@@ -71,6 +76,7 @@ def generate_grid(lat_min, lat_max, lon_min, lon_max, steps):
     return points
 
 async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore, state):
+    """Параллельная обработка карточки заведения"""
     async with semaphore:
         page = None
         try:
@@ -97,7 +103,7 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
                     }
                 });
             }""")
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(random.randint(500, 1000))
 
             tels = page.locator('a[href^="tel:"]')
             phones = []
@@ -126,7 +132,7 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
 
             websites = []
             bad_domains = ["2gis", "yandex", "google", "flamp", "apple", "play.google", "otello", "restoclub", "tomesto", "zoon", "sbermarket", "megamarket", "delivery-club", "eda.yandex", "mos.ru", "gosuslugi", "w3.org", "github.com", "yoo.money"]
-            good_indicators = [".ru", ".com", ".рф", ".org", ".net", ".info", ".su", ".pro", ".moscow", ".club", ".space", ".io", ".me", ".kz", ".by", "vk.com", "t.me", "wa.me", "taplink.cc", "instagram.com"]
+            good_indicators = [".ru", ".com", ".рф", ".org", ".net", ".info", ".su", ".pro", ".moscow", ".agency", ".media", ".digital", "vk.com", "t.me", "wa.me", "taplink.cc"]
 
             for val in raw_data:
                 val_lower = val.lower()
@@ -156,7 +162,7 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
 
         except (asyncio.CancelledError, PlaywrightError):
             pass
-        except Exception as e:
+        except Exception:
             pass
         finally:
             if page:
@@ -166,14 +172,16 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
                     pass
 
 async def main():
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    
     search_queries = [
         "кальянная", "кальян бар", "лаундж бар", 
         "hookah lounge", "кальянный клуб",
         "магазин кальянов", "табак для кальяна", "кальян"
     ]
     city = "moscow"
-    file_path = "кальянные_москвы.xlsx"
-    progress_file = "progress_kalian.txt" 
+    file_path = os.path.join(BASE_DIR, "кальянные_москвы.xlsx")
+    progress_file = os.path.join(BASE_DIR, "progress_kalian.txt")
     sheet_title = "Кальянные"
     
     LAT_MIN, LAT_MAX = 55.55, 55.92
@@ -181,7 +189,8 @@ async def main():
     GRID_STEPS = 5 
     ZOOM = 14  
     
-    MAX_PAGES_PER_CELL = 10 
+    # 4 страниц хватит для большинства плотных секторов (до 96 заведений на сектор)
+    MAX_PAGES_PER_CELL = 4 
     CONCURRENCY_LIMIT = 4
 
     saved_ids = set()
@@ -203,8 +212,10 @@ async def main():
         ws = wb.active
         ws.title = sheet_title
         ws.append(["№", "Название", "Адрес", "Телефон", "Сайт", "URL"])
+        wb.save(file_path)
         results_count = 0
 
+    # Загрузка уже пройденных секторов
     done_sectors = set()
     if os.path.exists(progress_file):
         with open(progress_file, "r", encoding="utf-8") as f:
@@ -216,11 +227,14 @@ async def main():
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=True, 
+            headless=False, 
             args=["--disable-blink-features=AutomationControlled"]
         )
+        
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/127.0.0.0",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="ru-RU",
+            timezone_id="Europe/Moscow",
             viewport={"width": 1280, "height": 720}
         )
         
@@ -235,34 +249,76 @@ async def main():
 
                 for cell_idx, (lat, lon, sector_name) in enumerate(grid_points, 1):
                     progress_key = f"{search_query}|{sector_name}"
+                    
+                    # Извлекаем короткое имя, чтобы отсечь районы. Например: "Сектор A1"
+                    short_sector_name = sector_name.split(' (')[0]
 
                     if progress_key in done_sectors:
-                        print(f"⏩ Пропущен (уже готов): {search_query} | {sector_name}")
+                        print(f"⏩ Пропущен (уже готов): {search_query} | {short_sector_name}")
                         continue
 
                     print(f"\n📍 [{search_query}] [{cell_idx}/{len(grid_points)}]: {sector_name}")
+                    # ВЫВОД: Всего страниц
+                    print(f"📊 {short_sector_name}: всего страниц (максимум): {MAX_PAGES_PER_CELL}")
 
                     for page_num in range(1, MAX_PAGES_PER_CELL + 1):
+                        # ВЫВОД: Текущая страница
+                        print(f"   📄 {short_sector_name}: страница {page_num}")
+                        
                         search_url = f"https://2gis.ru/{city}/search/{encoded_query}/page/{page_num}?m={lon}%2C{lat}%2F{ZOOM}"
                         
                         try:
                             await main_page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
                             await bypass_museum(main_page)
-                            await main_page.wait_for_timeout(1000)
                             
-                            # Скроллинг страницы для прогрузки всех 24 карточек
-                            for _ in range(5):
+                            # --- ЭМУЛЯЦИЯ ЧЕЛОВЕКА (Умный Скролл) ---
+                            try:
+                                first_card = main_page.locator('a[href*="/firm/"]').first
+                                await first_card.wait_for(state="attached", timeout=5000)
+                                await first_card.hover()
+                            except Exception:
+                                await main_page.mouse.move(200, 300)
+
+                            prev_count = 0
+                            for _ in range(4):
                                 await main_page.mouse.wheel(0, 3000)
-                                await main_page.wait_for_timeout(800)
-                                
+                                await main_page.wait_for_timeout(random.randint(600, 1200))
+                                current_count = await main_page.locator('a[href*="/firm/"]').count()
+                                if current_count == prev_count and current_count > 0:
+                                    break 
+                                prev_count = current_count
+
                         except Exception:
                             continue
 
                         cards = main_page.locator('a[href*="/firm/"]')
                         card_count = await cards.count()
-                        
+
+                        # --- ЗАЩИТА ОТ ТЕНЕВОГО БАНА И КАПЧИ ---
                         if card_count == 0:
-                            break
+                            captcha_indicators = await main_page.locator("text=/робот|капча|captcha/i").count()
+                            
+                            if captcha_indicators > 0:
+                                print('\a')
+                                print("\n[!!!] ВНИМАНИЕ: 2ГИС выдал капчу (теневой бан).")
+                                print("[!!!] У вас есть 5 минут, чтобы решить её вручную в открытом окне браузера!")
+                                
+                                resolved = False
+                                for sec in range(300):
+                                    await asyncio.sleep(1)
+                                    if await main_page.locator('a[href*="/firm/"]').count() > 0:
+                                        print("\n[+] Капча успешно решена! Продолжаем сбор...")
+                                        resolved = True
+                                        card_count = await main_page.locator('a[href*="/firm/"]').count()
+                                        break
+                                    if sec > 0 and sec % 60 == 0:
+                                        print(f"... осталось {5 - sec//60} мин ...")
+                                
+                                if not resolved:
+                                    print("\n[-] Время вышло. Капча не решена. Скрипт остановлен для сохранения прогресса.")
+                                    return 
+                            else:
+                                break
 
                         tasks = []
                         for i in range(card_count):
@@ -274,10 +330,17 @@ async def main():
                                     full_url = clean if clean.startswith('http') else f"https://2gis.ru{clean}"
                                     
                                     saved_ids.add(firm_id) 
+                                    await asyncio.sleep(random.uniform(0.1, 0.5))
                                     tasks.append(process_firm(context, firm_id, full_url, ws, wb, file_path, lock, semaphore, state))
 
                         if tasks:
                             await asyncio.gather(*tasks, return_exceptions=True)
+
+                        # --- УМНАЯ ОСТАНОВКА (Smart Break) ---
+                        if card_count < 12:
+                            # ВЫВОД: Причина остановки перебора страниц
+                            print(f"   🛑 Меньше 12 карточек. Сектор {short_sector_name} полностью собран.")
+                            break
 
                     done_sectors.add(progress_key)
                     with open(progress_file, "a", encoding="utf-8") as f:
