@@ -3,7 +3,24 @@ import urllib.parse
 import openpyxl
 import os
 import re
+import sys
 from playwright.async_api import async_playwright, Error as PlaywrightError
+
+# --- ИСПРАВЛЕНИЕ ОШИБКИ ПРИ НАЖАТИИ CTRL+C НА WINDOWS ---
+if sys.platform.startswith('win'):
+    from asyncio.proactor_events import _ProactorBasePipeTransport
+    
+    def silence_event_loop_closed(func):
+        def wrapper(self, *args, **kwargs):
+            try:
+                return func(self, *args, **kwargs)
+            except (RuntimeError, ValueError) as e:
+                if str(e) not in ['Event loop is closed', 'I/O operation on closed pipe']:
+                    raise
+        return wrapper
+        
+    _ProactorBasePipeTransport.__del__ = silence_event_loop_closed(_ProactorBasePipeTransport.__del__)
+# ---------------------------------------------------------
 
 def get_firm_id(url):
     if not url:
@@ -149,10 +166,10 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
                     pass
 
 async def main():
-    # ДОБАВЛЕНО: расширенные поисковые запросы
     search_queries = [
         "кальянная", "кальян бар", "лаундж бар", 
-        "hookah lounge", "кальянный клуб", "кальян"
+        "hookah lounge", "кальянный клуб",
+        "магазин кальянов", "табак для кальяна", "кальян"
     ]
     city = "moscow"
     file_path = "кальянные_москвы.xlsx"
@@ -164,7 +181,6 @@ async def main():
     GRID_STEPS = 5 
     ZOOM = 14  
     
-    # ИЗМЕНЕНО: проверяем до 10 страниц выдачи
     MAX_PAGES_PER_CELL = 10 
     CONCURRENCY_LIMIT = 4
 
@@ -234,7 +250,7 @@ async def main():
                             await bypass_museum(main_page)
                             await main_page.wait_for_timeout(1000)
                             
-                            # ДОБАВЛЕНО: Скроллинг страницы для прогрузки всех 24 карточек (lazy loading)
+                            # Скроллинг страницы для прогрузки всех 24 карточек
                             for _ in range(5):
                                 await main_page.mouse.wheel(0, 3000)
                                 await main_page.wait_for_timeout(800)
