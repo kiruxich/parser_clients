@@ -135,7 +135,7 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
             socials = [w for w in websites if any(s in w.lower() for s in ['vk.com', 't.me', 'instagram.com', 'wa.me', 'whatsapp.com'])]
             site_str = real_sites[0] if real_sites else (socials[0] if socials else "Нет сайта")
 
-            # Форматируем тип сайта для логов
+            # Форматируем тип сайта для логов и таблицы
             site_label = "[WEB]"
             if "t.me" in site_str or "tg://" in site_str:
                 site_label = "[TG]"
@@ -156,7 +156,8 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
                 if site_str != "Нет сайта":
                     state["sites_found"] = state.get("sites_found", 0) + 1
 
-                ws.append([curr_no, title, address, phone_str, site_str, url])
+                # Запись в Excel: ["№", "Название", "Адрес", "Телефон", "Сайт", "Тип сайта", "URL"]
+                ws.append([curr_no, title, address, phone_str, site_str, site_label, url])
                 print(f"   [{curr_no}] {title} | 📞 {phone_str} | {site_label} {site_str}")
 
                 state["unsaved"] = state.get("unsaved", 0) + 1
@@ -217,8 +218,9 @@ async def main():
         wb = openpyxl.load_workbook(file_path)
         ws = wb.active
         for row in ws.iter_rows(min_row=2, values_only=True):
-            if len(row) >= 6 and row[5]:
-                firm_id = get_firm_id(row[5])
+            if row and len(row) >= 6:
+                # Берем значение из последней колонки (URL), даже если структуры старых и новых строк различаются
+                firm_id = get_firm_id(row[-1])
                 if firm_id:
                     saved_ids.add(firm_id)
         results_count = ws.max_row - 1
@@ -227,7 +229,7 @@ async def main():
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = sheet_title
-        ws.append(["№", "Название", "Адрес", "Телефон", "Сайт", "URL"])
+        ws.append(["№", "Название", "Адрес", "Телефон", "Сайт", "Тип сайта", "URL"])
         wb.save(file_path)
         results_count = 0
 
