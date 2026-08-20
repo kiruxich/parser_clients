@@ -1,10 +1,28 @@
 {
   "queries": [
-    "кальянная",
-    "кальян бар",
-    "лаундж бар",
-    "hookah lounge",
-    "кальянный клуб",
-    "кальян"
+    {
+      "query": "кальянная",
+      "keywords": ["кальян", "hookah", "лаундж", "lounge"]
+    },
+    {
+      "query": "кальян бар",
+      "keywords": ["кальян", "hookah", "лаундж", "lounge"]
+    },
+    {
+      "query": "лаундж бар",
+      "keywords": ["кальян", "hookah", "лаундж", "lounge"]
+    },
+    {
+      "query": "hookah lounge",
+      "keywords": ["кальян", "hookah", "лаундж", "lounge"]
+    },
+    {
+      "query": "кальянный клуб",
+      "keywords": ["кальян", "hookah", "клуб"]
+    },
+    {
+      "query": "кальян",
+      "keywords": ["кальян", "hookah"]
+    }
   ]
 }
