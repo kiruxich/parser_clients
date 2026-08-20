@@ -310,7 +310,7 @@ async def main():
                         await bypass_museum(main_page)
                         await main_page.wait_for_timeout(1500) 
 
-                                                # --- ЖЕЛЕЗНЫЙ СКРОЛЛ ЧЕРЕЗ JAVASCRIPT И PAGE_DOWN ---
+                        # --- ЖЕЛЕЗНЫЙ СКРОЛЛ ЧЕРЕЗ JAVASCRIPT И PAGE_DOWN ---
                         empty_scrolls = 0 
                         for scroll_step in range(4):
                             current_cards = main_page.locator('a[href*="/firm/"]')
@@ -321,7 +321,6 @@ async def main():
                                 
                             # Принудительно скроллим контейнер выдачи через JS
                             await main_page.evaluate("""() => {
-                                // Ищем главный контейнер с результатами поиска в 2ГИС
                                 const scroller = document.querySelector('div[class*="scrollbar-view"]') || 
                                                  document.querySelector('div[class*="searchResult"]') ||
                                                  document.querySelector('div[class*="scrollContainer"]');
@@ -332,7 +331,7 @@ async def main():
                                 }
                             """)
                             
-                            # Дополнительно на всякий случай шлем нажатие Page Down в фокус страницы
+                            # Дополнительно шлем нажатие Page Down
                             await main_page.keyboard.press("PageDown")
                             await main_page.wait_for_timeout(1200)
                             
