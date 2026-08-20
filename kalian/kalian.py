@@ -233,8 +233,7 @@ async def main():
         wb.save(file_path)
         results_count = 0
 
-    # ЧТЕНИЕ ПОСТРАНИЧНОГО ПРОГРЕССА
-    done_pages = set() # Хранит строки вида "запрос|page|номер" или "запрос|DONE"
+    done_pages = set()
     if os.path.exists(progress_file):
         with open(progress_file, "r", encoding="utf-8") as f:
             done_pages = set(line.strip() for line in f if line.strip())
@@ -297,7 +296,6 @@ async def main():
                 query_start_time = time.time()
 
                 for page_num in range(1, MAX_PAGES + 1):
-                    # Проверяем, не была ли эта конкретная страница уже обработана
                     page_key = f"{search_query}|page|{page_num}"
                     if page_key in done_pages:
                         print(f"   ⏩ Страница {page_num} уже была обработана ранее, пропускаем...")
@@ -312,40 +310,32 @@ async def main():
                         await bypass_museum(main_page)
                         await main_page.wait_for_timeout(1500) 
 
-                        # --- НАДЕЖНЫЙ СКРОЛЛ ЛЕВОЙ ПАНЕЛИ С ВЫДАЧЕЙ ---
-                        # Наводим курсор на левую панель с карточками
-                        try:
-                            cards_panel = main_page.locator('div[class*="searchResult"], div[class*="sidebar"]').first
-                            if await cards_panel.count() > 0:
-                                box = await cards_panel.bounding_box()
-                                if box:
-                                    await main_page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-                            else:
-                                await main_page.mouse.move(250, 400)
-                        except Exception:
-                            await main_page.mouse.move(250, 400)
-
-                        prev_count = 0
+                        # --- НАДЕЖНЫЙ СКРОЛЛ К ПОСЛЕДНЕЙ КАРТОЧКЕ ---
                         empty_scrolls = 0 
-                        
-                        # Делаем до 8 прокруток колесиком мыши
-                        for scroll_step in range(8):
-                            await main_page.mouse.wheel(0, 1500)
-                            await main_page.wait_for_timeout(800)
-                            
-                            current_count = await main_page.locator('a[href*="/firm/"]').count()
+                        for scroll_step in range(5):
+                            current_cards = main_page.locator('a[href*="/firm/"]')
+                            current_count = await current_cards.count()
                             
                             if current_count >= 24:
                                 break
-                            
-                            if current_count == prev_count and current_count > 0:
-                                empty_scrolls += 1
-                                if empty_scrolls >= 2: 
-                                    break 
-                            else:
-                                empty_scrolls = 0 
                                 
-                            prev_count = current_count
+                            if current_count > 0:
+                                last_card = current_cards.nth(current_count - 1)
+                                try:
+                                    await last_card.scroll_into_view_if_needed(timeout=2000)
+                                    await last_card.hover(timeout=2000)
+                                except Exception:
+                                    pass
+                                    
+                            await main_page.wait_for_timeout(1000)
+                            
+                            new_count = await main_page.locator('a[href*="/firm/"]').count()
+                            if new_count == current_count:
+                                empty_scrolls += 1
+                                if empty_scrolls >= 2:
+                                    break
+                            else:
+                                empty_scrolls = 0
 
                     except Exception as e:
                         print(f"   ⚠️ Ошибка при загрузке страницы {page_num}: {e}")
@@ -379,7 +369,6 @@ async def main():
                                 return 
                         else:
                             print(f"   🛑 Заведений больше нет. Выдача района завершена.")
-                            # Помечаем район полностью готовым
                             with open(progress_file, "a", encoding="utf-8") as f:
                                 f.write(f"{search_query}|DONE\n")
                             done_pages.add(f"{search_query}|DONE")
@@ -425,7 +414,6 @@ async def main():
                         except PermissionError:
                             pass
 
-                    # ЗАПИСЫВАЕМ УСПЕШНО ОБРАБОТАННУЮ СТРАНИЦУ В PROGRESS_FILE
                     with open(progress_file, "a", encoding="utf-8") as f:
                         f.write(f"{page_key}\n")
                     done_pages.add(page_key)
