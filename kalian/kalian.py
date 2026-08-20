@@ -202,7 +202,7 @@ async def main():
     search_queries = [
         "кальянная", "кальян бар", "лаундж бар", 
         "hookah lounge", "кальянный клуб",
-        "магазин кальянов", "табак для кальяна", "кальян"
+        "кальян"
     ]
     city = "moscow"
     file_path = os.path.join(BASE_DIR, "кальянные_москвы.xlsx")
