@@ -310,7 +310,7 @@ async def main():
                         await bypass_museum(main_page)
                         await main_page.wait_for_timeout(1500) 
 
-                        # --- ЖЕЛЕЗНЫЙ СКРОЛЛ ЧЕРЕЗ JAVASCRIPT И PAGE_DOWN ---
+                                                # --- НАДЕЖНЫЙ СКРОЛЛ (БЕЗ СИНТАКСИЧЕСКИХ ОШИБОК) ---
                         empty_scrolls = 0 
                         for scroll_step in range(4):
                             current_cards = main_page.locator('a[href*="/firm/"]')
@@ -319,19 +319,9 @@ async def main():
                             if current_count >= 24:
                                 break
                                 
-                            # Принудительно скроллим контейнер выдачи через JS
-                            await main_page.evaluate("""() => {
-                                const scroller = document.querySelector('div[class*="scrollbar-view"]') || 
-                                                 document.querySelector('div[class*="searchResult"]') ||
-                                                 document.querySelector('div[class*="scrollContainer"]');
-                                if (scroller) {
-                                    scroller.scrollBy(0, 1000);
-                                } else {
-                                    window.scrollBy(0, 1000);
-                                }
-                            """)
+                            # Однострочный JS-скрипт без риска сломать кавычки
+                            await main_page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
                             
-                            # Дополнительно шлем нажатие Page Down
                             await main_page.keyboard.press("PageDown")
                             await main_page.wait_for_timeout(1200)
                             
@@ -342,8 +332,7 @@ async def main():
                                     break
                             else:
                                 empty_scrolls = 0
-                        # -----------------------------------------------------------
-
+                        # ----------------------------------------------------
 
                     except Exception as e:
                         print(f"   ⚠️ Ошибка при загрузке страницы {page_num}: {e}")
