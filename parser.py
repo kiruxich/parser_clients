@@ -45,6 +45,39 @@ def get_progress_bar(iteration, total, length=20):
     bar = '█' * filled_length + '░' * (length - filled_length)
     return f"[{bar}] {percent}%"
 
+def generate_grid(lat_min, lat_max, lon_min, lon_max, steps):
+    """Генерирует сетку секторов с координатами и названиями районов (как в первой версии)"""
+    lat_step = (lat_max - lat_min) / steps
+    lon_step = (lon_max - lon_min) / steps
+    points = []
+    
+    grid_districts = [
+        ["Внуково, Московский", "Теплый Стан, Коньково", "Бутово, Ясенево, Чертаново Юж.", "Бирюлево, Царицыно", "Зябликово, Братеево, Капотня"],
+        ["Очаково, Солнцево", "Пр-т Вернадского, Раменки", "Чертаново Сев., Зюзино", "Нагатино, Печатники, Текстильщики", "Марьино, Люблино, Кузьминки"],
+        ["Кунцево, Крылатское", "Филевский парк, Хамовники", "ЦАО (Арбат, Якиманка, Замоскворечье)", "Таганский, Басманный, Лефортово", "Перово, Новогиреево, Рязанский"],
+        ["Строгино, Митино", "Хорошево-Мневники, Сокол", "Тверской, Пресня, Марьина Роща", "Сокольники, Алексеевский", "Измайлово, Гольяново"],
+        ["Куркино, Сев. Тушино", "Ховрино, Головинский", "Отрадное, Коптево, Тимирязевский", "ВДНХ, Останкино, Свиблово", "Медведково, Бабушкинский"]
+    ]
+
+    for i in range(steps):
+        for j in range(steps):
+            lat = round(lat_min + lat_step * (i + 0.5), 6)
+            lon = round(lon_min + lon_step * (j + 0.5), 6)
+            
+            col_letter = chr(65 + j)
+            row_num = steps - i 
+            
+            if steps == 5:
+                districts = grid_districts[i][j]
+                sector_name = f"Сектор {col_letter}{row_num} ({districts})"
+            else:
+                sector_name = f"Сектор {col_letter}{row_num}"
+                
+            points.append((lat, lon, sector_name))
+            
+    points.sort(key=lambda x: x[2])
+    return points
+
 async def bypass_museum(page):
     if "museum" in page.url:
         try:
@@ -56,7 +89,7 @@ async def bypass_museum(page):
             pass
 
 async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore, state):
-    """Параллельная обработка карточки заведения"""
+    """Параллельная обработка карточки заведения (без изменений)"""
     async with semaphore:
         page = None
         try:
@@ -181,9 +214,42 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
                 except Exception:
                     pass
 
+async def has_next_page(page) -> bool:
+    """Проверяет наличие ссылки на следующую страницу в пагинации 2ГИС"""
+    try:
+        next_link = page.locator('a[rel="next"]')
+        if await next_link.count() > 0:
+            return True
+        next_btn = page.locator('a:has-text("Вперёд"), a:has-text("→")')
+        if await next_btn.count() > 0:
+            return True
+        # Дополнительная проверка по номерам страниц
+        page_links = page.locator('a[href*="/page/"]')
+        count = await page_links.count()
+        if count > 0:
+            numbers = []
+            for i in range(count):
+                href = await page_links.nth(i).get_attribute('href')
+                if href:
+                    match = re.search(r'/page/(\d+)', href)
+                    if match:
+                        numbers.append(int(match.group(1)))
+            if numbers:
+                max_page = max(numbers)
+                current = await page.evaluate("""() => {
+                    const active = document.querySelector('.pagination .active, .pagination .current, [data-page].active');
+                    return active ? parseInt(active.textContent) : null;
+                }""")
+                if current and current < max_page:
+                    return True
+    except Exception:
+        pass
+    return False
+
 async def main():
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     
+    # Чтение списка запросов из JSON
     json_path = os.path.join(BASE_DIR, 'spisok_poiska.json')
     if not os.path.exists(json_path):
         print(f"❌ Ошибка: Файл {json_path} не найден! Создайте его перед запуском.")
@@ -202,15 +268,19 @@ async def main():
     progress_file = os.path.join(BASE_DIR, "progress_b2b.txt")
     sheet_title = "База"
     
-    # СОЗДАЕМ ФАЙЛ ПРОГРЕССА СРАЗУ ПРИ ЗАПУСКЕ (ЕСЛИ ЕГО НЕТ)
     if not os.path.exists(progress_file):
         with open(progress_file, "w", encoding="utf-8") as f:
             f.write("")
         print(f"📄 Создан файл отслеживания прогресса: progress_b2b.txt")
 
-    MAX_PAGES = 15 
-    CONCURRENCY_LIMIT = 4
+    # ------------------ НОВЫЕ ПАРАМЕТРЫ СЕТКИ ------------------
+    LAT_MIN, LAT_MAX = 55.1, 56.2       # от юга области (Подольск) до севера (Дмитров)
+    LON_MIN, LON_MAX = 36.7, 38.4       # от запада (Одинцово) до востока (Люберцы, Балашиха)
+    GRID_STEPS = 7                      # больше секторов для детального покрытия
+    ZOOM = 13                           # чуть меньший зум, чтобы захватывать больше территории
+    # ---------------------------------------------------------
 
+    CONCURRENCY_LIMIT = 4
     saved_ids = set()
     lock = asyncio.Lock()
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
@@ -233,10 +303,12 @@ async def main():
         wb.save(file_path)
         results_count = 0
 
-    done_pages = set()
+    # Загружаем уже обработанные сектора (новый формат: "запрос|сектор")
+    done_sectors = set()
     if os.path.exists(progress_file):
         with open(progress_file, "r", encoding="utf-8") as f:
-            done_pages = set(line.strip() for line in f if line.strip())
+            done_sectors = set(line.strip() for line in f if line.strip())
+        print(f"📂 Загружено обработанных секторов: {len(done_sectors)}")
 
     state = {
         "count": results_count, 
@@ -271,13 +343,11 @@ async def main():
         )
         
         main_page = await context.new_page()
+        # Генерируем сетку один раз
+        grid_points = generate_grid(LAT_MIN, LAT_MAX, LON_MIN, LON_MAX, GRID_STEPS)
 
         try:
             for q_idx, search_query in enumerate(search_queries, 1):
-                if f"{search_query}|DONE" in done_pages:
-                    print(f"⏩ Пропущен район (полностью готов): {search_query}")
-                    continue
-                    
                 total_elapsed = time.time() - start_time
                 avg_per_query = total_elapsed / queries_done_this_run if queries_done_this_run > 0 else 0
                 remaining_queries = len(search_queries) - q_idx + 1
@@ -285,7 +355,7 @@ async def main():
                 
                 print(f"\n==================================================")
                 print(f"🔎 Запрос [{q_idx}/{len(search_queries)}]: '{search_query}'")
-                print(f"📈 Прогресс районов: {get_progress_bar(q_idx - 1, len(search_queries))} | Осталось: ~{eta}")
+                print(f"📈 Прогресс запросов: {get_progress_bar(q_idx - 1, len(search_queries))} | Осталось: ~{eta}")
                 print(f"==================================================")
                 
                 encoded_query = urllib.parse.quote(search_query)
@@ -295,141 +365,143 @@ async def main():
                 query_start_sites = state.get("sites_found", 0)
                 query_start_time = time.time()
 
-                for page_num in range(1, MAX_PAGES + 1):
-                    page_key = f"{search_query}|page|{page_num}"
-                    if page_key in done_pages:
-                        print(f"   ⏩ Страница {page_num} уже была обработана ранее, пропускаем...")
+                # ---- ЦИКЛ ПО СЕКТОРАМ ----
+                for cell_idx, (lat, lon, sector_name) in enumerate(grid_points, 1):
+                    progress_key = f"{search_query}|{sector_name}"
+                    short_sector = sector_name.split(' (')[0]  # для кратких сообщений
+
+                    if progress_key in done_sectors:
+                        print(f"⏩ Сектор уже обработан: {short_sector}")
                         continue
 
-                    print(f"\n   📄 Страница {page_num} из {MAX_PAGES} (макс.)")
-                    
-                    search_url = f"https://2gis.ru/{city}/search/{encoded_query}/page/{page_num}"
-                    
-                    try:
-                        await main_page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
-                        await bypass_museum(main_page)
-                        await main_page.wait_for_timeout(1500) 
+                    print(f"\n📍 Сектор [{cell_idx}/{len(grid_points)}]: {sector_name}")
 
-                                                # --- НАДЕЖНЫЙ СКРОЛЛ (БЕЗ СИНТАКСИЧЕСКИХ ОШИБОК) ---
-                        empty_scrolls = 0 
-                        for scroll_step in range(4):
-                            current_cards = main_page.locator('a[href*="/firm/"]')
-                            current_count = await current_cards.count()
-                            
-                            if current_count >= 24:
-                                break
+                    page_num = 1
+                    duplicate_pages_count = 0  # счётчик подряд идущих страниц без новых фирм
+
+                    while True:
+                        print(f"   📄 Страница {page_num}")
+
+                        # Формируем URL с координатами
+                        search_url = f"https://2gis.ru/{city}/search/{encoded_query}/page/{page_num}?m={lon}%2C{lat}%2F{ZOOM}"
+
+                        try:
+                            await main_page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+                            await bypass_museum(main_page)
+                            await main_page.wait_for_timeout(1500)
+
+                            # ---- УЛУЧШЕННЫЙ СКРОЛЛ (8 итераций) ----
+                            empty_scrolls = 0
+                            for _ in range(8):
+                                current_count = await main_page.locator('a[href*="/firm/"]').count()
+                                if current_count >= 24:
+                                    break
                                 
-                            # Однострочный JS-скрипт без риска сломать кавычки
-                            await main_page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
-                            
-                            await main_page.keyboard.press("PageDown")
-                            await main_page.wait_for_timeout(1200)
-                            
-                            new_count = await main_page.locator('a[href*="/firm/"]').count()
-                            if new_count == current_count:
-                                empty_scrolls += 1
-                                if empty_scrolls >= 2:
-                                    break
-                            else:
-                                empty_scrolls = 0
-                        # ----------------------------------------------------
+                                await main_page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
+                                await main_page.keyboard.press("PageDown")
+                                
+                                # Ждём появления новых карточек с умным ожиданием
+                                try:
+                                    await main_page.wait_for_function(
+                                        f"document.querySelectorAll('a[href*=\"/firm/\"]').length > {current_count}",
+                                        timeout=2000
+                                    )
+                                except Exception:
+                                    pass
+                                
+                                new_count = await main_page.locator('a[href*="/firm/"]').count()
+                                if new_count == current_count:
+                                    empty_scrolls += 1
+                                    if empty_scrolls >= 2:
+                                        break
+                                else:
+                                    empty_scrolls = 0
+                            # ---------------------------------------------
 
-                    except Exception as e:
-                        print(f"   ⚠️ Ошибка при загрузке страницы {page_num}: {e}")
-                        continue
+                        except Exception as e:
+                            print(f"   ⚠️ Ошибка загрузки страницы {page_num}: {e}")
+                            # В случае ошибки пытаемся перейти на следующую страницу (если есть)
+                            if not await has_next_page(main_page):
+                                break
+                            page_num += 1
+                            continue
 
-                    cards = main_page.locator('a[href*="/firm/"]')
-                    card_count = await cards.count()
-                    print(f"   🔍 Найдено карточек на странице: {card_count}")
+                        cards = main_page.locator('a[href*="/firm/"]')
+                        card_count = await cards.count()
+                        print(f"   🔍 Найдено карточек: {card_count}")
 
-                    if card_count == 0:
-                        captcha_indicators = await main_page.locator("text=/робот|капча|captcha/i").count()
-                        
-                        if captcha_indicators > 0:
-                            print('\a')
-                            print("\n[!!!] ВНИМАНИЕ: 2ГИС выдал капчу (теневой бан).")
-                            print("[!!!] У вас есть 5 минут, чтобы решить её вручную в открытом окне браузера!")
-                            
-                            resolved = False
-                            for sec in range(300):
-                                await asyncio.sleep(1)
-                                if await main_page.locator('a[href*="/firm/"]').count() > 0:
-                                    print("\n[+] Капча успешно решена! Продолжаем сбор...")
-                                    resolved = True
-                                    card_count = await main_page.locator('a[href*="/firm/"]').count()
-                                    break
-                                if sec > 0 and sec % 60 == 0:
-                                    print(f"... осталось {5 - sec//60} мин ...")
-                            
-                            if not resolved:
-                                print("\n[-] Время вышло. Капча не решена. Скрипт остановлен для сохранения прогресса.")
-                                return 
-                        else:
-                            print(f"   🛑 Заведений больше нет. Выдача района завершена.")
-                            with open(progress_file, "a", encoding="utf-8") as f:
-                                f.write(f"{search_query}|DONE\n")
-                            done_pages.add(f"{search_query}|DONE")
+                        # Если карточек 0 – значит это пустая страница (конец выдачи)
+                        if card_count == 0:
+                            print(f"   🛑 Карточек нет. Выдача сектора завершена.")
                             break
 
-                    tasks = []
-                    duplicates_on_page = 0
-                    unparsed_on_page = 0
-                    
-                    for i in range(card_count):
-                        href = await cards.nth(i).get_attribute('href')
-                        if href:
-                            firm_id = get_firm_id(href)
-                            if not firm_id:
-                                unparsed_on_page += 1
-                                continue
-                            if firm_id not in saved_ids:
-                                clean = href.split('?')[0]
-                                full_url = clean if clean.startswith('http') else f"https://2gis.ru{clean}"
-                                saved_ids.add(firm_id)
-                                tasks.append(process_firm(context, firm_id, full_url, ws, wb, file_path, lock, semaphore, state))
-                            else:
-                                duplicates_on_page += 1
+                        tasks = []
+                        duplicates_on_page = 0
+                        unparsed_on_page = 0
 
-                    state["duplicates"] += duplicates_on_page
+                        for i in range(card_count):
+                            href = await cards.nth(i).get_attribute('href')
+                            if href:
+                                firm_id = get_firm_id(href)
+                                if not firm_id:
+                                    unparsed_on_page += 1
+                                    continue
+                                if firm_id not in saved_ids:
+                                    clean = href.split('?')[0]
+                                    full_url = clean if clean.startswith('http') else f"https://2gis.ru{clean}"
+                                    saved_ids.add(firm_id)
+                                    tasks.append(process_firm(context, firm_id, full_url, ws, wb, file_path, lock, semaphore, state))
+                                else:
+                                    duplicates_on_page += 1
 
-                    if duplicates_on_page > 0:
-                        print(f"   ♻️ Дубликатов на странице: {duplicates_on_page}")
-                    if tasks:
-                        print(f"   ➕ Новых карточек к обработке: {len(tasks)}")
+                        state["duplicates"] += duplicates_on_page
 
-                    errors_before_page = state.get("errors", 0)
-                    if tasks:
-                        await asyncio.gather(*tasks, return_exceptions=True)
-                    page_errors = state.get("errors", 0) - errors_before_page
-                    if page_errors > 0:
-                        print(f"   ⚙️ Ошибок при обработке на этой странице: {page_errors}")
+                        if duplicates_on_page > 0:
+                            print(f"   ♻️ Дубликатов на странице: {duplicates_on_page}")
+                        if tasks:
+                            print(f"   ➕ Новых карточек к обработке: {len(tasks)}")
 
-                    if state["unsaved"] > 0:
-                        try:
-                            wb.save(file_path)
-                            state["unsaved"] = 0
-                        except PermissionError:
-                            pass
+                        errors_before_page = state.get("errors", 0)
+                        if tasks:
+                            await asyncio.gather(*tasks, return_exceptions=True)
+                        page_errors = state.get("errors", 0) - errors_before_page
+                        if page_errors > 0:
+                            print(f"   ⚙️ Ошибок при обработке: {page_errors}")
 
+                        # Сохраняем накопленные данные, если есть
+                        if state["unsaved"] > 0:
+                            try:
+                                wb.save(file_path)
+                                state["unsaved"] = 0
+                            except PermissionError:
+                                pass
+
+                        # ---------- НОВАЯ ЛОГИКА ОСТАНОВКИ ----------
+                        # 1. Проверяем наличие следующей страницы
+                        if not await has_next_page(main_page):
+                            print(f"   🛑 Следующая страница отсутствует. Сектор выгружен полностью.")
+                            break
+
+                        # 2. Счётчик дубликатов подряд (2 страницы)
+                        if card_count > 0 and duplicates_on_page == card_count:
+                            duplicate_pages_count += 1
+                        else:
+                            duplicate_pages_count = 0
+
+                        if duplicate_pages_count >= 2:
+                            print(f"   🛑 2 страницы подряд только с дубликатами. Дальше новых нет.")
+                            break
+                        # ---------------------------------------------
+
+                        page_num += 1
+
+                    # После завершения страниц помечаем сектор как обработанный
+                    done_sectors.add(progress_key)
                     with open(progress_file, "a", encoding="utf-8") as f:
-                        f.write(f"{page_key}\n")
-                    done_pages.add(page_key)
+                        f.write(f"{progress_key}\n")
+                    print(f"   ✅ Сектор {short_sector} завершён.")
 
-                    # --- УМНАЯ ОСТАНОВКА ---
-                    if card_count < 12:
-                        print(f"   🛑 Меньше 12 карточек на странице. Район полностью выгружен.")
-                        with open(progress_file, "a", encoding="utf-8") as f:
-                            f.write(f"{search_query}|DONE\n")
-                        done_pages.add(f"{search_query}|DONE")
-                        break
-                    
-                    if card_count > 0 and duplicates_on_page == card_count:
-                        print(f"   🛑 2ГИС пошел по кругу (100% дубликатов на странице). Переходим к следующему району.")
-                        with open(progress_file, "a", encoding="utf-8") as f:
-                            f.write(f"{search_query}|DONE\n")
-                        done_pages.add(f"{search_query}|DONE")
-                        break
-
+                # Итоги по запросу
                 query_new = state["count"] - query_start_count
                 query_dupes = state["duplicates"] - query_start_duplicates
                 query_elapsed = time.time() - query_start_time
@@ -446,7 +518,7 @@ async def main():
 
                 if q_idx < len(search_queries):
                     pause_time = random.uniform(5.0, 10.0)
-                    print(f"\n⏳ Ждем {pause_time:.1f} сек перед следующим районом для безопасности...")
+                    print(f"\n⏳ Ждем {pause_time:.1f} сек перед следующим запросом...")
                     await asyncio.sleep(pause_time)
 
         except asyncio.CancelledError:
