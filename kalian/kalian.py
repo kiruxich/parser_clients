@@ -135,7 +135,6 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
             socials = [w for w in websites if any(s in w.lower() for s in ['vk.com', 't.me', 'instagram.com', 'wa.me', 'whatsapp.com'])]
             site_str = real_sites[0] if real_sites else (socials[0] if socials else "Нет сайта")
 
-            # Форматируем тип сайта для логов и таблицы
             site_label = "[WEB]"
             if "t.me" in site_str or "tg://" in site_str:
                 site_label = "[TG]"
@@ -150,13 +149,11 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
                 state["count"] += 1
                 curr_no = state["count"]
                 
-                # Метрики качества
                 if phone_str != "Не указан":
                     state["phones_found"] = state.get("phones_found", 0) + 1
                 if site_str != "Нет сайта":
                     state["sites_found"] = state.get("sites_found", 0) + 1
 
-                # Запись в Excel: ["№", "Название", "Адрес", "Телефон", "Сайт", "Тип сайта", "URL"]
                 ws.append([curr_no, title, address, phone_str, site_str, site_label, url])
                 print(f"   [{curr_no}] {title} | 📞 {phone_str} | {site_label} {site_str}")
 
@@ -187,7 +184,6 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
 async def main():
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     
-    # --- ЧТЕНИЕ ЗАПРОСОВ ИЗ JSON ---
     json_path = os.path.join(BASE_DIR, 'spisok_poiska.json')
     if not os.path.exists(json_path):
         print(f"❌ Ошибка: Файл {json_path} не найден! Создайте его перед запуском.")
@@ -206,7 +202,12 @@ async def main():
     progress_file = os.path.join(BASE_DIR, "progress_b2b.txt")
     sheet_title = "База"
     
-    # Динамический лимит страниц для глубокого парсинга
+    # СОЗДАЕМ ФАЙЛ ПРОГРЕССА СРАЗУ ПРИ ЗАПУСКЕ (ЕСЛИ ЕГО НЕТ)
+    if not os.path.exists(progress_file):
+        with open(progress_file, "w", encoding="utf-8") as f:
+            f.write("")
+        print(f"📄 Создан файл отслеживания прогресса: progress_b2b.txt")
+
     MAX_PAGES = 15 
     CONCURRENCY_LIMIT = 4
 
@@ -219,7 +220,6 @@ async def main():
         ws = wb.active
         for row in ws.iter_rows(min_row=2, values_only=True):
             if row and len(row) >= 6:
-                # Берем значение из последней колонки (URL), даже если структуры старых и новых строк различаются
                 firm_id = get_firm_id(row[-1])
                 if firm_id:
                     saved_ids.add(firm_id)
@@ -233,11 +233,11 @@ async def main():
         wb.save(file_path)
         results_count = 0
 
-    done_queries = set()
+    # ЧТЕНИЕ ПОСТРАНИЧНОГО ПРОГРЕССА
+    done_pages = set() # Хранит строки вида "запрос|page|номер" или "запрос|DONE"
     if os.path.exists(progress_file):
         with open(progress_file, "r", encoding="utf-8") as f:
-            done_queries = set(line.strip() for line in f if line.strip())
-        print(f"✅ Загружен прогресс: пропущено уже готовых запросов: {len(done_queries)}\n")
+            done_pages = set(line.strip() for line in f if line.strip())
 
     state = {
         "count": results_count, 
@@ -275,18 +275,18 @@ async def main():
 
         try:
             for q_idx, search_query in enumerate(search_queries, 1):
-                if search_query in done_queries:
-                    print(f"⏩ Пропущен (уже готов): {search_query}")
+                if f"{search_query}|DONE" in done_pages:
+                    print(f"⏩ Пропущен район (полностью готов): {search_query}")
                     continue
                     
                 total_elapsed = time.time() - start_time
                 avg_per_query = total_elapsed / queries_done_this_run if queries_done_this_run > 0 else 0
-                remaining_queries = len(search_queries) - len(done_queries)
+                remaining_queries = len(search_queries) - q_idx + 1
                 eta = format_eta(remaining_queries * avg_per_query) if queries_done_this_run > 0 else "вычисляется..."
                 
                 print(f"\n==================================================")
                 print(f"🔎 Запрос [{q_idx}/{len(search_queries)}]: '{search_query}'")
-                print(f"📈 Прогресс: {get_progress_bar(len(done_queries), len(search_queries))} | Осталось: ~{eta}")
+                print(f"📈 Прогресс районов: {get_progress_bar(q_idx - 1, len(search_queries))} | Осталось: ~{eta}")
                 print(f"==================================================")
                 
                 encoded_query = urllib.parse.quote(search_query)
@@ -297,6 +297,12 @@ async def main():
                 query_start_time = time.time()
 
                 for page_num in range(1, MAX_PAGES + 1):
+                    # Проверяем, не была ли эта конкретная страница уже обработана
+                    page_key = f"{search_query}|page|{page_num}"
+                    if page_key in done_pages:
+                        print(f"   ⏩ Страница {page_num} уже была обработана ранее, пропускаем...")
+                        continue
+
                     print(f"\n   📄 Страница {page_num} из {MAX_PAGES} (макс.)")
                     
                     search_url = f"https://2gis.ru/{city}/search/{encoded_query}/page/{page_num}"
@@ -304,27 +310,28 @@ async def main():
                     try:
                         await main_page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
                         await bypass_museum(main_page)
-                        await main_page.wait_for_timeout(2000) 
-                        
+                        await main_page.wait_for_timeout(1500) 
+
+                        # --- НАДЕЖНЫЙ СКРОЛЛ ЛЕВОЙ ПАНЕЛИ С ВЫДАЧЕЙ ---
+                        # Наводим курсор на левую панель с карточками
                         try:
-                            first_card = main_page.locator('a[href*="/firm/"]').first
-                            await first_card.wait_for(state="attached", timeout=10000)
-                            await first_card.hover()
+                            cards_panel = main_page.locator('div[class*="searchResult"], div[class*="sidebar"]').first
+                            if await cards_panel.count() > 0:
+                                box = await cards_panel.bounding_box()
+                                if box:
+                                    await main_page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                            else:
+                                await main_page.mouse.move(250, 400)
                         except Exception:
-                            await main_page.mouse.move(200, 300)
+                            await main_page.mouse.move(250, 400)
 
                         prev_count = 0
                         empty_scrolls = 0 
                         
-                        for _ in range(6):
-                            await main_page.mouse.wheel(0, 3000)
-                            try:
-                                await main_page.wait_for_function(
-                                    f"document.querySelectorAll('a[href*=\"/firm/\"]').length > {prev_count}", 
-                                    timeout=2000
-                                )
-                            except Exception:
-                                pass 
+                        # Делаем до 8 прокруток колесиком мыши
+                        for scroll_step in range(8):
+                            await main_page.mouse.wheel(0, 1500)
+                            await main_page.wait_for_timeout(800)
                             
                             current_count = await main_page.locator('a[href*="/firm/"]').count()
                             
@@ -340,11 +347,13 @@ async def main():
                                 
                             prev_count = current_count
 
-                    except Exception:
+                    except Exception as e:
+                        print(f"   ⚠️ Ошибка при загрузке страницы {page_num}: {e}")
                         continue
 
                     cards = main_page.locator('a[href*="/firm/"]')
                     card_count = await cards.count()
+                    print(f"   🔍 Найдено карточек на странице: {card_count}")
 
                     if card_count == 0:
                         captcha_indicators = await main_page.locator("text=/робот|капча|captcha/i").count()
@@ -369,7 +378,11 @@ async def main():
                                 print("\n[-] Время вышло. Капча не решена. Скрипт остановлен для сохранения прогресса.")
                                 return 
                         else:
-                            print(f"   🛑 Заведений больше нет. Выдача завершена.")
+                            print(f"   🛑 Заведений больше нет. Выдача района завершена.")
+                            # Помечаем район полностью готовым
+                            with open(progress_file, "a", encoding="utf-8") as f:
+                                f.write(f"{search_query}|DONE\n")
+                            done_pages.add(f"{search_query}|DONE")
                             break
 
                     tasks = []
@@ -395,8 +408,6 @@ async def main():
 
                     if duplicates_on_page > 0:
                         print(f"   ♻️ Дубликатов на странице: {duplicates_on_page}")
-                    if unparsed_on_page > 0:
-                        print(f"   ❓ Не удалось извлечь ID у {unparsed_on_page} карточек")
                     if tasks:
                         print(f"   ➕ Новых карточек к обработке: {len(tasks)}")
 
@@ -414,28 +425,31 @@ async def main():
                         except PermissionError:
                             pass
 
+                    # ЗАПИСЫВАЕМ УСПЕШНО ОБРАБОТАННУЮ СТРАНИЦУ В PROGRESS_FILE
+                    with open(progress_file, "a", encoding="utf-8") as f:
+                        f.write(f"{page_key}\n")
+                    done_pages.add(page_key)
+
                     # --- УМНАЯ ОСТАНОВКА ---
-                    # 1. Если карточек мало (конец списка)
                     if card_count < 12:
                         print(f"   🛑 Меньше 12 карточек на странице. Район полностью выгружен.")
+                        with open(progress_file, "a", encoding="utf-8") as f:
+                            f.write(f"{search_query}|DONE\n")
+                        done_pages.add(f"{search_query}|DONE")
                         break
                     
-                    # 2. Если 2ГИС начал зацикливать выдачу (вся страница - дубликаты)
                     if card_count > 0 and duplicates_on_page == card_count:
                         print(f"   🛑 2ГИС пошел по кругу (100% дубликатов на странице). Переходим к следующему району.")
+                        with open(progress_file, "a", encoding="utf-8") as f:
+                            f.write(f"{search_query}|DONE\n")
+                        done_pages.add(f"{search_query}|DONE")
                         break
-
-                # Фиксация прогресса
-                done_queries.add(search_query)
-                with open(progress_file, "a", encoding="utf-8") as f:
-                    f.write(f"{search_query}\n")
 
                 query_new = state["count"] - query_start_count
                 query_dupes = state["duplicates"] - query_start_duplicates
                 query_elapsed = time.time() - query_start_time
                 queries_done_this_run += 1
                 
-                # Статистика качества
                 q_phones = state.get("phones_found", 0) - query_start_phones
                 q_sites = state.get("sites_found", 0) - query_start_sites
                 ph_pct = (q_phones / query_new * 100) if query_new > 0 else 0
@@ -445,7 +459,6 @@ async def main():
                 print(f"   ✅ Новых: {query_new} | ♻️ Дубликатов: {query_dupes} | ⏱️ Заняло: {query_elapsed:.0f}с")
                 print(f"   📊 Качество данных: 📞 Телефоны {ph_pct:.1f}% | 🌐 Сайты {st_pct:.1f}%")
 
-                # ЧЕЛОВЕЧЕСКАЯ ПАУЗА ПЕРЕД НОВЫМ ЗАПРОСОМ (Анти-бан)
                 if q_idx < len(search_queries):
                     pause_time = random.uniform(5.0, 10.0)
                     print(f"\n⏳ Ждем {pause_time:.1f} сек перед следующим районом для безопасности...")
