@@ -46,18 +46,23 @@ def get_progress_bar(iteration, total, length=20):
     return f"[{bar}] {percent}%"
 
 def generate_grid(lat_min, lat_max, lon_min, lon_max, steps):
-    """Генерирует сетку секторов с координатами и названиями районов (как в первой версии)"""
+    """Генерирует сетку секторов с координатами и названиями районов"""
     lat_step = (lat_max - lat_min) / steps
     lon_step = (lon_max - lon_min) / steps
     points = []
     
-    grid_districts = [
-        ["Внуково, Московский", "Теплый Стан, Коньково", "Бутово, Ясенево, Чертаново Юж.", "Бирюлево, Царицыно", "Зябликово, Братеево, Капотня"],
-        ["Очаково, Солнцево", "Пр-т Вернадского, Раменки", "Чертаново Сев., Зюзино", "Нагатино, Печатники, Текстильщики", "Марьино, Люблино, Кузьминки"],
-        ["Кунцево, Крылатское", "Филевский парк, Хамовники", "ЦАО (Арбат, Якиманка, Замоскворечье)", "Таганский, Басманный, Лефортово", "Перово, Новогиреево, Рязанский"],
-        ["Строгино, Митино", "Хорошево-Мневники, Сокол", "Тверской, Пресня, Марьина Роща", "Сокольники, Алексеевский", "Измайлово, Гольяново"],
-        ["Куркино, Сев. Тушино", "Ховрино, Головинский", "Отрадное, Коптево, Тимирязевский", "ВДНХ, Останкино, Свиблово", "Медведково, Бабушкинский"]
-    ]
+    # Для удобства можно оставить пустые названия или генерировать по индексам
+    # Но мы оставим как в первой версии для 5x5, но для других размеров используем просто буквы+цифры
+    if steps == 5:
+        grid_districts = [
+            ["Внуково, Московский", "Теплый Стан, Коньково", "Бутово, Ясенево, Чертаново Юж.", "Бирюлево, Царицыно", "Зябликово, Братеево, Капотня"],
+            ["Очаково, Солнцево", "Пр-т Вернадского, Раменки", "Чертаново Сев., Зюзино", "Нагатино, Печатники, Текстильщики", "Марьино, Люблино, Кузьминки"],
+            ["Кунцево, Крылатское", "Филевский парк, Хамовники", "ЦАО (Арбат, Якиманка, Замоскворечье)", "Таганский, Басманный, Лефортово", "Перово, Новогиреево, Рязанский"],
+            ["Строгино, Митино", "Хорошево-Мневники, Сокол", "Тверской, Пресня, Марьина Роща", "Сокольники, Алексеевский", "Измайлово, Гольяново"],
+            ["Куркино, Сев. Тушино", "Ховрино, Головинский", "Отрадное, Коптево, Тимирязевский", "ВДНХ, Останкино, Свиблово", "Медведково, Бабушкинский"]
+        ]
+    else:
+        grid_districts = None
 
     for i in range(steps):
         for j in range(steps):
@@ -67,7 +72,7 @@ def generate_grid(lat_min, lat_max, lon_min, lon_max, steps):
             col_letter = chr(65 + j)
             row_num = steps - i 
             
-            if steps == 5:
+            if grid_districts:
                 districts = grid_districts[i][j]
                 sector_name = f"Сектор {col_letter}{row_num} ({districts})"
             else:
@@ -89,7 +94,7 @@ async def bypass_museum(page):
             pass
 
 async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore, state):
-    """Параллельная обработка карточки заведения (без изменений)"""
+    """Параллельная обработка карточки заведения"""
     async with semaphore:
         page = None
         try:
@@ -215,35 +220,62 @@ async def process_firm(context, firm_id, url, ws, wb, file_path, lock, semaphore
                     pass
 
 async def has_next_page(page) -> bool:
-    """Проверяет наличие ссылки на следующую страницу в пагинации 2ГИС"""
+    """Проверяет наличие следующей страницы в пагинации 2ГИС (улучшенная версия)"""
     try:
-        next_link = page.locator('a[rel="next"]')
-        if await next_link.count() > 0:
-            return True
-        next_btn = page.locator('a:has-text("Вперёд"), a:has-text("→")')
-        if await next_btn.count() > 0:
-            return True
-        # Дополнительная проверка по номерам страниц
-        page_links = page.locator('a[href*="/page/"]')
-        count = await page_links.count()
-        if count > 0:
-            numbers = []
-            for i in range(count):
-                href = await page_links.nth(i).get_attribute('href')
+        # Прокручиваем вниз, чтобы пагинация точно подгрузилась
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await page.wait_for_timeout(500)
+    except:
+        pass
+
+    # 1. Ищем ссылку с rel="next"
+    next_link = page.locator('a[rel="next"]')
+    if await next_link.count() > 0:
+        return True
+
+    # 2. Ищем кнопку/ссылку с текстом "Вперёд", "→", ">" (регистронезависимо)
+    next_btn = page.locator('a:has-text("Вперёд"), a:has-text("→"), a:has-text(">"), button:has-text("Вперёд"), button:has-text("→"), button:has-text(">")')
+    if await next_btn.count() > 0:
+        return True
+
+    # 3. Ищем все ссылки с /page/цифра, определяем максимальный номер страницы
+    page_links = page.locator('a[href*="/page/"]')
+    count = await page_links.count()
+    if count > 0:
+        numbers = []
+        for i in range(count):
+            href = await page_links.nth(i).get_attribute('href')
+            if href:
+                match = re.search(r'/page/(\d+)', href)
+                if match:
+                    numbers.append(int(match.group(1)))
+        if numbers:
+            max_page = max(numbers)
+            # Текущая страница из URL
+            current_url = page.url
+            current_match = re.search(r'/page/(\d+)', current_url)
+            current_page = int(current_match.group(1)) if current_match else 1
+            if current_page < max_page:
+                return True
+
+    # 4. Дополнительно: ищем блок пагинации с классом .pagination и проверяем наличие ссылок на другие страницы
+    pagination = page.locator('.pagination, .pager, .pages')
+    if await pagination.count() > 0:
+        links = pagination.locator('a[href*="/page/"]')
+        if await links.count() > 0:
+            # Получаем текущую страницу из URL
+            current_url = page.url
+            current_match = re.search(r'/page/(\d+)', current_url)
+            current_page = int(current_match.group(1)) if current_match else 1
+            for i in range(await links.count()):
+                href = await links.nth(i).get_attribute('href')
                 if href:
                     match = re.search(r'/page/(\d+)', href)
                     if match:
-                        numbers.append(int(match.group(1)))
-            if numbers:
-                max_page = max(numbers)
-                current = await page.evaluate("""() => {
-                    const active = document.querySelector('.pagination .active, .pagination .current, [data-page].active');
-                    return active ? parseInt(active.textContent) : null;
-                }""")
-                if current and current < max_page:
-                    return True
-    except Exception:
-        pass
+                        page_num = int(match.group(1))
+                        if page_num > current_page:
+                            return True
+
     return False
 
 async def main():
@@ -273,12 +305,13 @@ async def main():
             f.write("")
         print(f"📄 Создан файл отслеживания прогресса: progress_b2b.txt")
 
-    # ------------------ НОВЫЕ ПАРАМЕТРЫ СЕТКИ ------------------
-    LAT_MIN, LAT_MAX = 55.1, 56.2       # от юга области (Подольск) до севера (Дмитров)
-    LON_MIN, LON_MAX = 36.7, 38.4       # от запада (Одинцово) до востока (Люберцы, Балашиха)
-    GRID_STEPS = 7                      # больше секторов для детального покрытия
-    ZOOM = 13                           # чуть меньший зум, чтобы захватывать больше территории
-    # ---------------------------------------------------------
+    # ------------------ ПАРАМЕТРЫ СЕТКИ (для Москвы и области) ------------------
+    # Для охвата всей Московской области (от Подольска до Дмитрова, от Одинцово до Балашихи)
+    LAT_MIN, LAT_MAX = 55.1, 56.2
+    LON_MIN, LON_MAX = 36.7, 38.4
+    GRID_STEPS = 7          # 7x7 = 49 секторов
+    ZOOM = 13               # уменьшаем зум, чтобы захватить больше территории
+    # --------------------------------------------------------------------------
 
     CONCURRENCY_LIMIT = 4
     saved_ids = set()
@@ -303,7 +336,7 @@ async def main():
         wb.save(file_path)
         results_count = 0
 
-    # Загружаем уже обработанные сектора (новый формат: "запрос|сектор")
+    # Загружаем уже обработанные сектора
     done_sectors = set()
     if os.path.exists(progress_file):
         with open(progress_file, "r", encoding="utf-8") as f:
@@ -368,7 +401,7 @@ async def main():
                 # ---- ЦИКЛ ПО СЕКТОРАМ ----
                 for cell_idx, (lat, lon, sector_name) in enumerate(grid_points, 1):
                     progress_key = f"{search_query}|{sector_name}"
-                    short_sector = sector_name.split(' (')[0]  # для кратких сообщений
+                    short_sector = sector_name.split(' (')[0]
 
                     if progress_key in done_sectors:
                         print(f"⏩ Сектор уже обработан: {short_sector}")
@@ -420,8 +453,9 @@ async def main():
 
                         except Exception as e:
                             print(f"   ⚠️ Ошибка загрузки страницы {page_num}: {e}")
-                            # В случае ошибки пытаемся перейти на следующую страницу (если есть)
+                            # Если ошибка, проверяем, есть ли следующая страница, если нет – выходим
                             if not await has_next_page(main_page):
+                                print(f"   🛑 Следующая страница отсутствует. Сектор завершён (ошибка).")
                                 break
                             page_num += 1
                             continue
@@ -430,7 +464,6 @@ async def main():
                         card_count = await cards.count()
                         print(f"   🔍 Найдено карточек: {card_count}")
 
-                        # Если карточек 0 – значит это пустая страница (конец выдачи)
                         if card_count == 0:
                             print(f"   🛑 Карточек нет. Выдача сектора завершена.")
                             break
@@ -477,10 +510,24 @@ async def main():
                                 pass
 
                         # ---------- НОВАЯ ЛОГИКА ОСТАНОВКИ ----------
-                        # 1. Проверяем наличие следующей страницы
-                        if not await has_next_page(main_page):
-                            print(f"   🛑 Следующая страница отсутствует. Сектор выгружен полностью.")
-                            break
+                        # 1. Проверяем наличие следующей страницы с защитой от ложных срабатываний
+                        next_exists = await has_next_page(main_page)
+                        if not next_exists:
+                            # Если карточек мало (<12) – вероятно, это действительно конец
+                            if card_count < 12:
+                                print(f"   🛑 Следующая страница отсутствует, и карточек мало. Сектор выгружен.")
+                                break
+                            else:
+                                # Если карточек много, но следующей страницы нет – это странно, возможно, пагинация ещё не загрузилась
+                                print(f"   ⏳ Пагинация не найдена, но карточек много. Ждём 2 сек и проверяем ещё раз...")
+                                await main_page.wait_for_timeout(2000)
+                                next_exists = await has_next_page(main_page)
+                                if not next_exists:
+                                    print(f"   🛑 Следующая страница действительно отсутствует. Сектор завершён.")
+                                    break
+                                else:
+                                    print(f"   ✅ Пагинация появилась! Продолжаем.")
+                                    # Если появилась, продолжаем без break
 
                         # 2. Счётчик дубликатов подряд (2 страницы)
                         if card_count > 0 and duplicates_on_page == card_count:
