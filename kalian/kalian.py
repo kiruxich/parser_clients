@@ -310,24 +310,31 @@ async def main():
                         await bypass_museum(main_page)
                         await main_page.wait_for_timeout(1500) 
 
-                        # --- НАДЕЖНЫЙ СКРОЛЛ К ПОСЛЕДНЕЙ КАРТОЧКЕ ---
+                                                # --- ЖЕЛЕЗНЫЙ СКРОЛЛ ЧЕРЕЗ JAVASCRIPT И PAGE_DOWN ---
                         empty_scrolls = 0 
-                        for scroll_step in range(5):
+                        for scroll_step in range(4):
                             current_cards = main_page.locator('a[href*="/firm/"]')
                             current_count = await current_cards.count()
                             
                             if current_count >= 24:
                                 break
                                 
-                            if current_count > 0:
-                                last_card = current_cards.nth(current_count - 1)
-                                try:
-                                    await last_card.scroll_into_view_if_needed(timeout=2000)
-                                    await last_card.hover(timeout=2000)
-                                except Exception:
-                                    pass
-                                    
-                            await main_page.wait_for_timeout(1000)
+                            # Принудительно скроллим контейнер выдачи через JS
+                            await main_page.evaluate("""() => {
+                                // Ищем главный контейнер с результатами поиска в 2ГИС
+                                const scroller = document.querySelector('div[class*="scrollbar-view"]') || 
+                                                 document.querySelector('div[class*="searchResult"]') ||
+                                                 document.querySelector('div[class*="scrollContainer"]');
+                                if (scroller) {
+                                    scroller.scrollBy(0, 1000);
+                                } else {
+                                    window.scrollBy(0, 1000);
+                                }
+                            """)
+                            
+                            # Дополнительно на всякий случай шлем нажатие Page Down в фокус страницы
+                            await main_page.keyboard.press("PageDown")
+                            await main_page.wait_for_timeout(1200)
                             
                             new_count = await main_page.locator('a[href*="/firm/"]').count()
                             if new_count == current_count:
@@ -336,6 +343,8 @@ async def main():
                                     break
                             else:
                                 empty_scrolls = 0
+                        # -----------------------------------------------------------
+
 
                     except Exception as e:
                         print(f"   ⚠️ Ошибка при загрузке страницы {page_num}: {e}")
