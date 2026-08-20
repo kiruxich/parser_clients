@@ -189,7 +189,6 @@ async def main():
     GRID_STEPS = 5 
     ZOOM = 14  
     
-    # 4 страниц хватит для большинства плотных секторов (до 96 заведений на сектор)
     MAX_PAGES_PER_CELL = 4 
     CONCURRENCY_LIMIT = 4
 
@@ -250,7 +249,6 @@ async def main():
                 for cell_idx, (lat, lon, sector_name) in enumerate(grid_points, 1):
                     progress_key = f"{search_query}|{sector_name}"
                     
-                    # Извлекаем короткое имя, чтобы отсечь районы. Например: "Сектор A1"
                     short_sector_name = sector_name.split(' (')[0]
 
                     if progress_key in done_sectors:
@@ -258,11 +256,9 @@ async def main():
                         continue
 
                     print(f"\n📍 [{search_query}] [{cell_idx}/{len(grid_points)}]: {sector_name}")
-                    # ВЫВОД: Всего страниц
                     print(f"📊 {short_sector_name}: всего страниц (максимум): {MAX_PAGES_PER_CELL}")
 
                     for page_num in range(1, MAX_PAGES_PER_CELL + 1):
-                        # ВЫВОД: Текущая страница
                         print(f"   📄 {short_sector_name}: страница {page_num}")
                         
                         search_url = f"https://2gis.ru/{city}/search/{encoded_query}/page/{page_num}?m={lon}%2C{lat}%2F{ZOOM}"
@@ -271,21 +267,46 @@ async def main():
                             await main_page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
                             await bypass_museum(main_page)
                             
+                            # Даем 2ГИС 2 секунды подгрузить свои тяжелые скрипты
+                            await main_page.wait_for_timeout(2000) 
+                            
                             # --- ЭМУЛЯЦИЯ ЧЕЛОВЕКА (Умный Скролл) ---
                             try:
                                 first_card = main_page.locator('a[href*="/firm/"]').first
-                                await first_card.wait_for(state="attached", timeout=5000)
+                                await first_card.wait_for(state="attached", timeout=10000)
                                 await first_card.hover()
                             except Exception:
                                 await main_page.mouse.move(200, 300)
 
                             prev_count = 0
-                            for _ in range(4):
+                            empty_scrolls = 0  # Счетчик "холостых" прокруток
+                            
+                            for _ in range(6):
                                 await main_page.mouse.wheel(0, 3000)
-                                await main_page.wait_for_timeout(random.randint(600, 1200))
+                                
+                                # УМНОЕ ОЖИДАНИЕ: Ждем до 2 секунд, пока количество карточек физически не превысит старое
+                                try:
+                                    await main_page.wait_for_function(
+                                        f"document.querySelectorAll('a[href*=\"/firm/\"]').length > {prev_count}", 
+                                        timeout=2000
+                                    )
+                                except Exception:
+                                    pass # Таймаут: новые карточки не появились
+                                
                                 current_count = await main_page.locator('a[href*="/firm/"]').count()
+                                
+                                # В 2ГИС на одной странице максимум 24 организации. Если дошли до лимита - сразу выходим!
+                                if current_count >= 24:
+                                    break
+                                
+                                # Проверка на зависание загрузки
                                 if current_count == prev_count and current_count > 0:
-                                    break 
+                                    empty_scrolls += 1
+                                    if empty_scrolls >= 2: # Даем 2ГИС две попытки (до 4 секунд лагов), прежде чем сдаться
+                                        break 
+                                else:
+                                    empty_scrolls = 0 # Сбрасываем счетчик, если карточки успешно подгрузились
+                                    
                                 prev_count = current_count
 
                         except Exception:
@@ -338,7 +359,6 @@ async def main():
 
                         # --- УМНАЯ ОСТАНОВКА (Smart Break) ---
                         if card_count < 12:
-                            # ВЫВОД: Причина остановки перебора страниц
                             print(f"   🛑 Меньше 12 карточек. Сектор {short_sector_name} полностью собран.")
                             break
 
